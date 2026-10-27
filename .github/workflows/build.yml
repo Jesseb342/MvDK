@@ -1,5 +1,5 @@
 
-name: NxNative - Generic IPA Builder
+name: NxNative - Universal IPA Builder
 
 on:
   workflow_dispatch:
@@ -41,6 +41,14 @@ jobs:
           repository: seedds/nxnative
           ref: main
 
+      - name: Checkout upstream profiles for BC fallback
+        if: inputs.device == 'iPhone 15 or older (BC fallback)'
+        uses: actions/checkout@v4
+        with:
+          repository: seedds/nxnative
+          ref: main
+          path: upstream-nxnative
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -55,7 +63,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           brew install xcodegen zstd spirv-cross unar
+
           python -m pip install --upgrade pip
           python -m pip install \
             lz4 capstone fonttools backports.zstd gdown
@@ -69,6 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           WORK="$RUNNER_TEMP/nxnative"
           mkdir -p "$WORK"
 
@@ -102,9 +113,7 @@ jobs:
               elif query.get("id"):
                   file_id = query["id"][0]
 
-          if not file_id and re.fullmatch(
-              r"[-A-Za-z0-9_]{20,}", url
-          ):
+          if not file_id and re.fullmatch(r"[-A-Za-z0-9_]{20,}", url):
               file_id = url
 
           if not file_id:
@@ -144,10 +153,11 @@ jobs:
 
           chmod 600 "$WORK/prod.keys"
 
-      - name: Extract RAR archives or accept direct game packages
+      - name: Extract archives and prepare game packages
         shell: bash
         run: |
           set -euo pipefail
+
           WORK="$RUNNER_TEMP/nxnative"
           GAME_DIR="$RUNNER_TEMP/GameFiles"
           mkdir -p "$GAME_DIR"
@@ -160,9 +170,8 @@ jobs:
 
           work = Path(sys.argv[1])
           game_dir = Path(sys.argv[2])
-          package_extensions = {
-              ".nsp", ".xci", ".nsz", ".xcz"
-          }
+
+          package_extensions = {".nsp", ".xci", ".nsz", ".xcz"}
           rar_signatures = (
               b"Rar!\x1a\x07\x00",
               b"Rar!\x1a\x07\x01\x00",
@@ -222,12 +231,7 @@ jobs:
                   print(f"{label}: RAR archive detected; extracting.")
 
                   subprocess.run(
-                      [
-                          "unar",
-                          "-o",
-                          str(extract_dir),
-                          str(source),
-                      ],
+                      ["unar", "-o", str(extract_dir), str(source)],
                       check=True,
                   )
 
@@ -304,6 +308,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           GAME_DIR="$RUNNER_TEMP/GameFiles"
 
           DETECTED_ID="$(python - "$GAME_DIR" <<'PY'
@@ -352,9 +357,7 @@ jobs:
                               continue
 
                           names.append(
-                              strings[offset:end].decode(
-                                  errors="replace"
-                              )
+                              strings[offset:end].decode(errors="replace")
                           )
 
                       return names
@@ -380,10 +383,7 @@ jobs:
                       if (title_id & 0xFFF) == 0:
                           candidates.add(f"{title_id:016X}")
 
-              match = re.search(
-                  r"\[([0-9A-Fa-f]{16})\]",
-                  path.name,
-              )
+              match = re.search(r"\[([0-9A-Fa-f]{16})\]", path.name)
 
               if match:
                   title_id = int(match.group(1), 16)
@@ -415,14 +415,56 @@ jobs:
           echo "DM_GAME=$PROFILE_ID" >> "$GITHUB_ENV"
           echo "DETECTED_TITLE_ID=$DETECTED_ID" >> "$GITHUB_ENV"
 
+      - name: Import missing game profile from upstream
+        if: inputs.device == 'iPhone 15 or older (BC fallback)'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROFILE_DIR="dm/games/$DM_GAME"
+          UPSTREAM_PROFILE="upstream-nxnative/dm/games/$DM_GAME"
+
+          echo "Checking profile: $DM_GAME"
+
+          if [[ -f "$PROFILE_DIR/game.tsv" ]]; then
+            echo "Profile already exists in the BC fallback checkout."
+          elif [[ -f "$UPSTREAM_PROFILE/game.tsv" ]]; then
+            echo "Profile missing in fallback; importing upstream profile."
+            mkdir -p "$PROFILE_DIR"
+            cp -a "$UPSTREAM_PROFILE/." "$PROFILE_DIR/"
+            test -s "$PROFILE_DIR/game.tsv"
+            echo "Imported profile files:"
+            ls -la "$PROFILE_DIR"
+          else
+            echo "::error::No game.tsv profile found in either checkout for $DM_GAME"
+            exit 1
+          fi
+
+      - name: Verify game profile
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROFILE_DIR="dm/games/$DM_GAME"
+
+          if [[ ! -s "$PROFILE_DIR/game.tsv" ]]; then
+            echo "::error::Missing game profile: $PROFILE_DIR/game.tsv"
+            exit 1
+          fi
+
+          echo "Using profile: $PROFILE_DIR"
+          head -n 20 "$PROFILE_DIR/game.tsv"
+
       - name: Update shader toolchain lock and header
         shell: bash
         run: |
           set -euo pipefail
+
           echo "Preparing shader toolchain for profile $DM_GAME"
 
           CHAIN_SCRIPT="$(
-            find . -name dmsh_chain.py -type f -print -quit
+            find . -path './upstream-nxnative' -prune -o \
+              -name dmsh_chain.py -type f -print -quit
           )"
 
           if [[ -z "$CHAIN_SCRIPT" ]]; then
@@ -437,6 +479,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           WORK="$RUNNER_TEMP/nxnative"
           GAME_DIR="$RUNNER_TEMP/GameFiles"
           OUTPUT="$RUNNER_TEMP/NxNative.ipa"
