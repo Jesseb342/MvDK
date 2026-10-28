@@ -79,7 +79,7 @@ jobs:
             REPO_URL="https://codeload.github.com/mianmuhammadse/nxnative/tar.gz/d158df611bf2f3fa315c4f16585575cdfdb2a1d3"
             ARCHIVE="$RUNNER_TEMP/nxnative-bc-fallback.tar.gz"
 
-            echo "Downloading the known BC-fallback commit archive..."
+            echo "Downloading the BC-fallback source archive..."
             curl --fail --location --retry 3 \
               "$REPO_URL" \
               --output "$ARCHIVE"
@@ -90,12 +90,11 @@ jobs:
               -C nxnative
 
             test -f nxnative/scripts/build_ipa_from_nsp.py || {
-              echo "::error::Downloaded archive does not contain the expected nxnative build script."
+              echo "::error::Downloaded archive is missing the expected build script."
               exit 1
             }
 
             echo "NXNATIVE_MODE=bc-fallback" >> "$GITHUB_ENV"
-            echo "Downloaded BC-fallback commit d158df611bf2f3fa315c4f16585575cdfdb2a1d3"
           else
             git clone https://github.com/seedds/nxnative.git nxnative
             git -C nxnative checkout main
@@ -122,7 +121,44 @@ jobs:
             }
 
             echo "Downloading $label..."
-            gdown --fuzzy "$url" --output "$destination"
+
+            # Use -O, supported by the installed gdown version.
+            gdown "$url" -O "$destination"
+
+            test -s "$destination" || {
+              echo "::error::$label download produced an empty file."
+              exit 1
+            }
+
+            # Keep the key file's exact filename.
+            if [[ "$destination" == "$GAME_DIR/keys/prod.keys" ]]; then
+              return 0
+            fi
+
+            # Add a usable extension so the package discovery step
+            # can recognize direct NSP downloads and supported archives.
+            local file_type
+            file_type="$(file -b "$destination")"
+
+            case "$file_type" in
+              *"Zip archive"*)
+                mv "$destination" "${destination}.zip"
+                ;;
+              *"RAR archive"*)
+                mv "$destination" "${destination}.rar"
+                ;;
+              *"7-zip archive"*)
+                mv "$destination" "${destination}.7z"
+                ;;
+              *"gzip compressed"*)
+                mv "$destination" "${destination}.tar.gz"
+                ;;
+              *)
+                # Direct Nintendo packages are commonly reported as
+                # generic data by macOS's file command.
+                mv "$destination" "${destination}.nsp"
+                ;;
+            esac
           }
 
           download_drive_file "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
@@ -159,6 +195,9 @@ jobs:
               *.7z|*.7Z)
                 7z x -y "-o$GAME_DIR/extracted" "$file"
                 ;;
+              *.tar.gz|*.tgz)
+                tar -xzf "$file" -C "$GAME_DIR/extracted"
+                ;;
               *)
                 cp -f "$file" "$GAME_DIR/extracted/$(basename "$file")"
                 ;;
@@ -177,7 +216,7 @@ jobs:
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -print -quit | grep -q .; then
             echo "::error::No NSP/NSZ packages found."
-            echo "Check whether downloaded package files have valid extensions."
+            echo "Check that the Google Drive links point to actual package files or supported archives."
             exit 1
           fi
 
