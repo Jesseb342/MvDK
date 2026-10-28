@@ -58,9 +58,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           brew update
           brew install dotnet gdown lz4 zstd spirv-cross xcodegen unar p7zip
-          python3 -m pip install --user capstone fonttools lz4 zstandard
+
+          # Avoid PEP 668 by using an isolated Python environment.
+          python3 -m venv "$RUNNER_TEMP/nxnative-venv"
+          source "$RUNNER_TEMP/nxnative-venv/bin/activate"
+
+          python -m pip install --upgrade pip
+          python -m pip install \
+            capstone \
+            fonttools \
+            lz4 \
+            zstandard
+
+          echo "$RUNNER_TEMP/nxnative-venv/bin" >> "$GITHUB_PATH"
 
       - name: Select nxnative source revision
         shell: bash
@@ -106,7 +119,7 @@ jobs:
           download_drive_file "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
 
           test -s "$GAME_DIR/keys/prod.keys" || {
-            echo "::error::prod.keys download failed."
+            echo "::error::prod.keys download failed. Check Keys_URL."
             exit 1
           }
 
@@ -116,7 +129,6 @@ jobs:
           set -euo pipefail
 
           mkdir -p "$GAME_DIR/extracted" "$GAME_DIR/nsp"
-
           shopt -s nullglob
 
           for file in "$GAME_DIR"/downloads/*; do
@@ -291,7 +303,7 @@ jobs:
 
           if [[ ! -d "$SHADER_PKG" ]]; then
             echo "::error::Shader package directory not found: $SHADER_PKG"
-            echo "Inspect the first build's log for the actual build path."
+            echo "Inspect the first build log for the actual path."
             exit 1
           fi
 
@@ -306,7 +318,7 @@ jobs:
           echo "Shader package: $SHADER_PKG"
           echo "Shader cache: $SHADER_CACHE"
 
-          # Intentionally omit IOSOUT for the Mac-side build.
+          # Deliberately omit IOSOUT for the Mac-side build.
           python3 dm/gfx/tools/dmsh_build.py \
             "$SHADER_PKG" \
             "$SHADER_CACHE"
