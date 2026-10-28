@@ -103,6 +103,56 @@ jobs:
 
           echo "NXNATIVE_DIR=$GITHUB_WORKSPACE/nxnative" >> "$GITHUB_ENV"
 
+      - name: Rebuild shader translator from repository source
+        shell: bash
+        working-directory: nxnative
+        run: |
+          set -euo pipefail
+
+          MACHINE="$(uname -m)"
+
+          case "$MACHINE" in
+            arm64|aarch64)
+              RID="osx-arm64"
+              ;;
+            x86_64)
+              RID="osx-x64"
+              ;;
+            *)
+              echo "::error::Unsupported Mac runner architecture: $MACHINE"
+              exit 1
+              ;;
+          esac
+
+          echo "Runner architecture: $MACHINE"
+          echo "Building dmsh_xlate for $RID"
+
+          dotnet publish dm/gfx/tools/dmsh_xlate \
+            -c Release \
+            -r "$RID" \
+            -o dm/gfx/tools/dmsh_xlate_bin
+
+          test -d dm/gfx/tools/dmsh_xlate_bin || {
+            echo "::error::Translator output directory was not created."
+            exit 1
+          }
+
+          echo "Translator output:"
+          ls -la dm/gfx/tools/dmsh_xlate_bin
+
+          if [[ -f dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate ]]; then
+            chmod +x dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate
+          fi
+
+          if [[ -f dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.dll ]]; then
+            echo "Translator DLL was generated."
+          elif [[ -f dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate ]]; then
+            echo "Translator executable was generated."
+          else
+            echo "::error::Expected dmsh_xlate executable or DLL was not generated."
+            exit 1
+          fi
+
       - name: Download game, optional update/DLC, and keys
         shell: bash
         run: |
@@ -121,8 +171,6 @@ jobs:
             }
 
             echo "Downloading $label..."
-
-            # Use -O, supported by the installed gdown version.
             gdown "$url" -O "$destination"
 
             test -s "$destination" || {
@@ -130,13 +178,10 @@ jobs:
               exit 1
             }
 
-            # Keep the key file's exact filename.
             if [[ "$destination" == "$GAME_DIR/keys/prod.keys" ]]; then
               return 0
             fi
 
-            # Add a usable extension so the package discovery step
-            # can recognize direct NSP downloads and supported archives.
             local file_type
             file_type="$(file -b "$destination")"
 
@@ -154,8 +199,6 @@ jobs:
                 mv "$destination" "${destination}.tar.gz"
                 ;;
               *)
-                # Direct Nintendo packages are commonly reported as
-                # generic data by macOS's file command.
                 mv "$destination" "${destination}.nsp"
                 ;;
             esac
@@ -216,7 +259,7 @@ jobs:
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -print -quit | grep -q .; then
             echo "::error::No NSP/NSZ packages found."
-            echo "Check that the Google Drive links point to actual package files or supported archives."
+            echo "Check that the Drive links point to actual package files or supported archives."
             exit 1
           fi
 
@@ -321,6 +364,9 @@ jobs:
           set -euo pipefail
           export DM_GAME
 
+          echo "Verifying rebuilt translator source hash:"
+          dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate --source-sha
+
           python3 dm/gfx/tools/dmsh_chain.py --update-lock
           python3 dm/gfx/tools/dmsh_chain.py --header
 
@@ -367,7 +413,7 @@ jobs:
           mkdir -p "$SHADER_CACHE"
 
           echo "Running full Mac-side shader build..."
-          python3 dm/gfx/tools/dmsh_build.py \
+          DM_GAME="$DM_GAME" python3 dm/gfx/tools/dmsh_build.py \
             "$SHADER_PKG" \
             "$SHADER_CACHE"
 
