@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       device_target:
-        description: "Choose the target iPhone"
+        description: "Choose your target iPhone"
         required: true
         type: choice
         options:
@@ -36,17 +36,19 @@ jobs:
       KEYS_URL: ${{ secrets.Keys_URL }}
       DEVICE_TARGET: ${{ inputs.device_target }}
       PROFILE_OVERRIDE: ${{ inputs.profile_id }}
-      GAME_DIR: ${{ runner.temp }}/GameFiles
+      GAME_DIR: ${{ github.workspace }}/GameFiles
 
     steps:
       - name: Check required secrets
         shell: bash
         run: |
           set -euo pipefail
+
           [[ -n "$GAME_URL" ]] || {
             echo "::error::Missing repository secret Game_URL"
             exit 1
           }
+
           [[ -n "$KEYS_URL" ]] || {
             echo "::error::Missing repository secret Keys_URL"
             exit 1
@@ -57,21 +59,8 @@ jobs:
         run: |
           set -euo pipefail
           brew update
-          brew install \
-            dotnet \
-            gdown \
-            lz4 \
-            zstd \
-            spirv-cross \
-            xcodegen \
-            unar \
-            p7zip
-
-          python3 -m pip install --user \
-            capstone \
-            fonttools \
-            lz4 \
-            zstandard
+          brew install dotnet gdown lz4 zstd spirv-cross xcodegen unar p7zip
+          python3 -m pip install --user capstone fonttools lz4 zstandard
 
       - name: Select nxnative source revision
         shell: bash
@@ -102,26 +91,22 @@ jobs:
             local destination="$2"
             local label="$3"
 
-            [[ -n "$url" ]] || return 0
+            [[ -n "$url" ]] || {
+              echo "Skipping optional $label."
+              return 0
+            }
 
-            echo "Downloading $label from Google Drive..."
+            echo "Downloading $label..."
             gdown --fuzzy "$url" --output "$destination"
           }
 
-          download_drive_file \
-            "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
-
-          download_drive_file \
-            "$UPDATE_URL" "$GAME_DIR/downloads/update" "update"
-
-          download_drive_file \
-            "$DLC_URL" "$GAME_DIR/downloads/dlc" "DLC"
-
-          download_drive_file \
-            "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
+          download_drive_file "$GAME_URL" "$GAME_DIR/downloads/game" "base game"
+          download_drive_file "$UPDATE_URL" "$GAME_DIR/downloads/update" "update"
+          download_drive_file "$DLC_URL" "$GAME_DIR/downloads/dlc" "DLC"
+          download_drive_file "$KEYS_URL" "$GAME_DIR/keys/prod.keys" "prod.keys"
 
           test -s "$GAME_DIR/keys/prod.keys" || {
-            echo "::error::prod.keys was not downloaded. Check Keys_URL."
+            echo "::error::prod.keys download failed."
             exit 1
           }
 
@@ -137,25 +122,21 @@ jobs:
           for file in "$GAME_DIR"/downloads/*; do
             [[ -f "$file" ]] || continue
 
-            description="$(file -b "$file")"
-            echo "Checking downloaded file: $(basename "$file")"
-            echo "$description"
+            echo "Checking $(basename "$file")"
 
             case "$file" in
               *.zip|*.ZIP)
                 ditto -x -k "$file" "$GAME_DIR/extracted"
                 ;;
               *.rar|*.RAR)
-                unar -force-overwrite -output-directory \
-                  "$GAME_DIR/extracted" "$file"
+                unar -force-overwrite \
+                  -output-directory "$GAME_DIR/extracted" "$file"
                 ;;
               *.7z|*.7Z)
                 7z x -y "-o$GAME_DIR/extracted" "$file"
                 ;;
               *)
-                # Google Drive may save a direct NSP without an .nsp
-                # extension. Preserve it for package identification.
-                cp "$file" "$GAME_DIR/extracted/$(basename "$file")"
+                cp -f "$file" "$GAME_DIR/extracted/$(basename "$file")"
                 ;;
             esac
           done
@@ -164,20 +145,19 @@ jobs:
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -exec cp -f {} "$GAME_DIR/nsp/" \;
 
-          # Include direct NSP/NSZ downloads that were not archives.
-          find "$GAME_DIR/downloads" -type f \
+          find "$GAME_DIR/downloads" -maxdepth 1 -type f \
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -exec cp -f {} "$GAME_DIR/nsp/" \;
 
-          if ! find "$GAME_DIR/nsp" -type f \
+          if ! find "$GAME_DIR/nsp" -maxdepth 1 -type f \
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -print -quit | grep -q .; then
-            echo "::error::No NSP/NSZ files found. Check the Drive files and archive format."
+            echo "::error::No NSP/NSZ packages found."
             exit 1
           fi
 
-          echo "Game packages found:"
-          find "$GAME_DIR/nsp" -type f -maxdepth 1 -print
+          echo "Packages found:"
+          find "$GAME_DIR/nsp" -maxdepth 1 -type f -print
 
       - name: Identify base game title ID
         shell: bash
@@ -188,27 +168,27 @@ jobs:
             DM_GAME="${PROFILE_OVERRIDE^^}"
             DM_GAME="${DM_GAME#0X}"
           else
-            # Prefer the base-game package tagged v0 in its filename.
             BASE_FILE="$(
               find "$GAME_DIR/nsp" -maxdepth 1 -type f \
-                -iname '*.nsp' \
-                | grep -Ei '\[v0\]' \
-                | head -n 1 || true
+                -iname '*.nsp' |
+                grep -Ei '\[v0\]' |
+                head -n 1 || true
             )"
 
             if [[ -z "$BASE_FILE" ]]; then
               BASE_FILE="$(
                 find "$GAME_DIR/nsp" -maxdepth 1 -type f \
-                  -iname '*.nsp' \
-                  | grep -Eiv '\[v[1-9][0-9]*\]' \
-                  | head -n 1 || true
+                  -iname '*.nsp' |
+                  grep -Eiv '\[v[1-9][0-9]*\]' |
+                  head -n 1 || true
               )"
             fi
 
             if [[ -z "$BASE_FILE" ]]; then
               BASE_FILE="$(
                 find "$GAME_DIR/nsp" -maxdepth 1 -type f \
-                  -iname '*.nsp' | head -n 1
+                  -iname '*.nsp' |
+                  head -n 1 || true
               )"
             fi
 
@@ -222,19 +202,19 @@ jobs:
           fi
 
           if [[ ! "$DM_GAME" =~ ^[0-9A-F]{16}$ ]]; then
-            echo "::error::Could not determine a 16-character base-game title ID. Rerun with profile_id set to the base game's title ID."
+            echo "::error::Could not identify a valid 16-character title ID."
+            echo "Rerun with profile_id set to the base game's title ID."
             exit 1
           fi
 
           echo "DM_GAME=$DM_GAME" >> "$GITHUB_ENV"
-          echo "Identified base-game title ID: $DM_GAME"
+          echo "Title ID: $DM_GAME"
 
       - name: Prepare game directory
         shell: bash
         run: |
           set -euo pipefail
 
-          # Keep NSPs together in a directory named for the game.
           mkdir -p "$GAME_DIR/GameFiles"
 
           find "$GAME_DIR/nsp" -maxdepth 1 -type f \
@@ -243,16 +223,15 @@ jobs:
 
           echo "BUILD_GAME_DIR=$GAME_DIR/GameFiles" >> "$GITHUB_ENV"
 
-      - name: Import upstream game profile when available
+      - name: Import upstream game profile if missing
         shell: bash
         run: |
           set -euo pipefail
 
-          REPO="$NXNATIVE_DIR"
-          PROFILE="$REPO/dm/games/$DM_GAME"
+          PROFILE="$NXNATIVE_DIR/dm/games/$DM_GAME"
 
           if [[ -f "$PROFILE/game.tsv" ]]; then
-            echo "A game profile already exists for $DM_GAME."
+            echo "Game profile already exists."
             exit 0
           fi
 
@@ -263,12 +242,12 @@ jobs:
           UPSTREAM_PROFILE="$RUNNER_TEMP/upstream-nxnative/dm/games/$DM_GAME"
 
           if [[ -f "$UPSTREAM_PROFILE/game.tsv" ]]; then
-            echo "Importing upstream profile for $DM_GAME"
             mkdir -p "$PROFILE"
             cp -R "$UPSTREAM_PROFILE/." "$PROFILE/"
+            echo "Imported upstream profile for $DM_GAME."
           else
-            echo "No registered upstream profile for $DM_GAME."
-            echo "The builder may create a provisional profile."
+            echo "No upstream profile found for $DM_GAME."
+            echo "The builder may need to generate a profile."
           fi
 
       - name: Repair shader-chain lock and header
@@ -276,14 +255,10 @@ jobs:
         working-directory: nxnative
         run: |
           set -euo pipefail
-
           export DM_GAME
 
           python3 dm/gfx/tools/dmsh_chain.py --update-lock
           python3 dm/gfx/tools/dmsh_chain.py --header
-
-          echo "Shader-chain files:"
-          ls -l dm/gfx/nvn/dmsh_chain.h dm/gfx/tools/dmsh_chain.lock
 
       - name: First IPA build attempt
         id: first_build
@@ -298,7 +273,7 @@ jobs:
             -k "$GAME_DIR/keys/prod.keys" \
             -o "$GAME_DIR/${DM_GAME}.ipa"
 
-      - name: Generate Mac shader outputs and missing profile tables
+      - name: Generate Mac shader outputs and profile tables
         id: generate_tables
         if: steps.first_build.outcome == 'failure'
         shell: bash
@@ -309,67 +284,49 @@ jobs:
           set -euo pipefail
 
           REPO="$GITHUB_WORKSPACE/nxnative"
-          GAME_FOLDER="$BUILD_GAME_DIR"
-          BUILD_DIR="$GAME_FOLDER/${DM_GAME}_build"
+          BUILD_DIR="$BUILD_GAME_DIR/${DM_GAME}_build"
           SHADER_PKG="$BUILD_DIR/shader/pkg"
           SHADER_CACHE="$BUILD_DIR/shader/cache"
-
-          # The first build should have completed shader splitting and
-          # iOS compilation before reaching the missing-table error.
-          if [[ ! -d "$SHADER_PKG" ]]; then
-            echo "::error::Expected shader package not found: $SHADER_PKG"
-            echo "The first build may have failed before shader splitting."
-            exit 1
-          fi
-
           PROFILE_DIR="$REPO/dm/games/$DM_GAME"
 
-          # If the builder created a provisional profile, use that profile
-          # instead of the repository profile.
-          if [[ ! -f "$PROFILE_DIR/game.tsv" ]]; then
-            PROFILE_DIR="$BUILD_DIR/profile/$DM_GAME"
-          fi
-
-          if [[ ! -f "$PROFILE_DIR/game.tsv" ]]; then
-            echo "::error::Could not find game.tsv for $DM_GAME"
+          if [[ ! -d "$SHADER_PKG" ]]; then
+            echo "::error::Shader package directory not found: $SHADER_PKG"
+            echo "Inspect the first build's log for the actual build path."
             exit 1
           fi
 
+          if [[ ! -f "$PROFILE_DIR/game.tsv" ]]; then
+            echo "::error::Profile game.tsv not found: $PROFILE_DIR/game.tsv"
+            exit 1
+          fi
+
+          mkdir -p "$SHADER_CACHE"
+
+          echo "Running full Mac-side shader build..."
+          echo "Shader package: $SHADER_PKG"
+          echo "Shader cache: $SHADER_CACHE"
+
+          # Intentionally omit IOSOUT for the Mac-side build.
+          python3 dm/gfx/tools/dmsh_build.py \
+            "$SHADER_PKG" \
+            "$SHADER_CACHE"
+
           CHAIN="$(
-            sed -n 's/.*DMSH_CHAIN "\(.*\)".*/\1/p' \
-              "$PROFILE_DIR/dmsh_chain.h" | head -n 1
+            find "$SHADER_CACHE" -maxdepth 1 -type d -name 'b-*' \
+              -print |
+              head -n 1 |
+              xargs basename 2>/dev/null |
+              sed 's/^b-//' || true
           )"
 
           if [[ -z "$CHAIN" ]]; then
-            echo "::error::Could not read DMSH_CHAIN from the profile header."
+            echo "::error::No b-<chain> Mac shader output directory was generated."
+            find "$SHADER_CACHE" -maxdepth 3 -print || true
             exit 1
           fi
 
           MAC_LIB_DIR="$SHADER_CACHE/b-$CHAIN"
 
-          mkdir -p "$SHADER_CACHE" "$BUILD_DIR/tmp"
-
-          export DM_ROOT="$BUILD_DIR"
-          export WORK="$BUILD_DIR/tmp"
-          export DM_GAME
-
-          echo "Running the full Mac-side shader build."
-          echo "Shader package: $SHADER_PKG"
-          echo "Shader cache:   $SHADER_CACHE"
-          echo "Chain version:  $CHAIN"
-
-          # IMPORTANT: omit IOSOUT here. This creates the Mac-side
-          # outputs needed to generate c1_full.tsv and cb_extent.tsv.
-          python3 dm/gfx/tools/dmsh_build.py \
-            "$SHADER_PKG" \
-            "$SHADER_CACHE"
-
-          if [[ ! -d "$MAC_LIB_DIR" ]]; then
-            echo "::error::Mac shader output directory was not created: $MAC_LIB_DIR"
-            exit 1
-          fi
-
-          # Generate the required tables from the actual Mac shader outputs.
           python3 dm/gfx/tools/c1_guard.py \
             "$MAC_LIB_DIR" \
             "$PROFILE_DIR/c1_full.tsv"
@@ -381,10 +338,10 @@ jobs:
           test -s "$PROFILE_DIR/c1_full.tsv"
           test -s "$PROFILE_DIR/cb_extent.tsv"
 
-          echo "Generated profile tables:"
+          echo "Generated tables:"
           ls -lh "$PROFILE_DIR/c1_full.tsv" "$PROFILE_DIR/cb_extent.tsv"
 
-      - name: Retry IPA build after generating shader tables
+      - name: Retry IPA build after generating tables
         if: steps.first_build.outcome == 'failure' && steps.generate_tables.outcome == 'success'
         shell: bash
         working-directory: nxnative
@@ -396,15 +353,15 @@ jobs:
             -k "$GAME_DIR/keys/prod.keys" \
             -o "$GAME_DIR/${DM_GAME}.ipa"
 
-      - name: Upload IPA and build logs
+      - name: Upload IPA and build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nxnative-${{ env.DM_GAME }}-IPA-and-logs
           if-no-files-found: warn
           path: |
-            ${{ runner.temp }}/GameFiles/*.ipa
-            ${{ runner.temp }}/GameFiles/GameFiles/*_build/logs/**
-            ${{ runner.temp }}/GameFiles/GameFiles/*_build/shader/**
-            ${{ runner.temp }}/GameFiles/GameFiles/*.nsp
+            ${{ github.workspace }}/GameFiles/*.ipa
+            ${{ github.workspace }}/GameFiles/GameFiles/*_build/logs/**
+            ${{ github.workspace }}/GameFiles/GameFiles/*_build/shader/**
+            ${{ github.workspace }}/GameFiles/GameFiles/*.nsp
           retention-days: 7
