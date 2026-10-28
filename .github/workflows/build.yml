@@ -54,13 +54,18 @@ jobs:
             exit 1
           }
 
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
       - name: Install build dependencies
         shell: bash
         run: |
           set -euo pipefail
 
           brew update
-          brew install dotnet gdown lz4 zstd spirv-cross xcodegen unar p7zip
+          brew install gdown lz4 zstd spirv-cross xcodegen unar p7zip
 
           python3 -m venv "$RUNNER_TEMP/nxnative-venv"
           source "$RUNNER_TEMP/nxnative-venv/bin/activate"
@@ -69,6 +74,9 @@ jobs:
           python -m pip install capstone fonttools lz4 zstandard
 
           echo "$RUNNER_TEMP/nxnative-venv/bin" >> "$GITHUB_PATH"
+
+          echo "Installed .NET SDK:"
+          dotnet --info
 
       - name: Download the selected nxnative source
         shell: bash
@@ -125,33 +133,28 @@ jobs:
           esac
 
           echo "Runner architecture: $MACHINE"
-          echo "Building dmsh_xlate for $RID"
+          echo "Building self-contained translator for $RID"
 
           dotnet publish dm/gfx/tools/dmsh_xlate \
             -c Release \
             -r "$RID" \
+            --self-contained true \
+            -p:UseAppHost=true \
             -o dm/gfx/tools/dmsh_xlate_bin
 
-          test -d dm/gfx/tools/dmsh_xlate_bin || {
-            echo "::error::Translator output directory was not created."
-            exit 1
-          }
+          TRANSLATOR="dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
 
-          echo "Translator output:"
-          ls -la dm/gfx/tools/dmsh_xlate_bin
-
-          if [[ -f dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate ]]; then
-            chmod +x dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate
-          fi
-
-          if [[ -f dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.dll ]]; then
-            echo "Translator DLL was generated."
-          elif [[ -f dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate ]]; then
-            echo "Translator executable was generated."
-          else
-            echo "::error::Expected dmsh_xlate executable or DLL was not generated."
+          if [[ ! -f "$TRANSLATOR" ]]; then
+            echo "::error::Translator executable was not generated at $TRANSLATOR"
+            echo "Published files:"
+            ls -la dm/gfx/tools/dmsh_xlate_bin || true
             exit 1
           fi
+
+          chmod +x "$TRANSLATOR"
+
+          echo "Checking the rebuilt translator:"
+          "$TRANSLATOR" --source-sha
 
       - name: Download game, optional update/DLC, and keys
         shell: bash
@@ -364,7 +367,7 @@ jobs:
           set -euo pipefail
           export DM_GAME
 
-          echo "Verifying rebuilt translator source hash:"
+          echo "Checking translator source hash:"
           dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate --source-sha
 
           python3 dm/gfx/tools/dmsh_chain.py --update-lock
