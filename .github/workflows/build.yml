@@ -70,30 +70,32 @@ jobs:
 
           echo "$RUNNER_TEMP/nxnative-venv/bin" >> "$GITHUB_PATH"
 
-      - name: Select nxnative source revision
+      - name: Download the selected nxnative source
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "$DEVICE_TARGET" == "iPhone 15 or older (BC fallback)" ]]; then
-            git clone --no-checkout \
-              https://github.com/mianmuhammadse/nxnative.git nxnative
+            REPO_URL="https://codeload.github.com/mianmuhammadse/nxnative/tar.gz/d158df611bf2f3fa315c4f16585575cdfdb2a1d3"
+            ARCHIVE="$RUNNER_TEMP/nxnative-bc-fallback.tar.gz"
 
-            cd nxnative
+            echo "Downloading the known BC-fallback commit archive..."
+            curl --fail --location --retry 3 \
+              "$REPO_URL" \
+              --output "$ARCHIVE"
 
-            # Fetch the branch containing the known-good BC fallback commit.
-            git fetch origin no-bc
+            mkdir -p nxnative
+            tar -xzf "$ARCHIVE" \
+              --strip-components=1 \
+              -C nxnative
 
-            # Check out the exact revision that worked on the iPhone 14.
-            git checkout --detach d158df611bf2f3fa315c4f16585575cdfdb2a1d3
-
-            # Fail here with a clear message if the commit cannot be resolved.
-            git rev-parse --verify \
-              d158df611bf2f3fa315c4f16585575cdfdb2a1d3^{commit}
-
-            cd ..
+            test -f nxnative/scripts/build_ipa_from_nsp.py || {
+              echo "::error::Downloaded archive does not contain the expected nxnative build script."
+              exit 1
+            }
 
             echo "NXNATIVE_MODE=bc-fallback" >> "$GITHUB_ENV"
+            echo "Downloaded BC-fallback commit d158df611bf2f3fa315c4f16585575cdfdb2a1d3"
           else
             git clone https://github.com/seedds/nxnative.git nxnative
             git -C nxnative checkout main
@@ -175,7 +177,7 @@ jobs:
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -print -quit | grep -q .; then
             echo "::error::No NSP/NSZ packages found."
-            echo "Check whether the downloaded files have valid package extensions."
+            echo "Check whether downloaded package files have valid extensions."
             exit 1
           fi
 
@@ -314,7 +316,7 @@ jobs:
 
           if [[ ! -d "$SHADER_PKG" ]]; then
             echo "::error::Shader package directory not found: $SHADER_PKG"
-            echo "Inspect the first build log for the actual path."
+            find "$BUILD_GAME_DIR" -maxdepth 5 -type d -print || true
             exit 1
           fi
 
@@ -326,9 +328,6 @@ jobs:
           mkdir -p "$SHADER_CACHE"
 
           echo "Running full Mac-side shader build..."
-          echo "Shader package: $SHADER_PKG"
-          echo "Shader cache: $SHADER_CACHE"
-
           python3 dm/gfx/tools/dmsh_build.py \
             "$SHADER_PKG" \
             "$SHADER_CACHE"
@@ -343,7 +342,7 @@ jobs:
 
           if [[ -z "$CHAIN" ]]; then
             echo "::error::No b-<chain> Mac shader output directory was generated."
-            find "$SHADER_CACHE" -maxdepth 3 -print || true
+            find "$SHADER_CACHE" -maxdepth 4 -print || true
             exit 1
           fi
 
