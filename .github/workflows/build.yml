@@ -62,16 +62,11 @@ jobs:
           brew update
           brew install dotnet gdown lz4 zstd spirv-cross xcodegen unar p7zip
 
-          # Avoid PEP 668 by using an isolated Python environment.
           python3 -m venv "$RUNNER_TEMP/nxnative-venv"
           source "$RUNNER_TEMP/nxnative-venv/bin/activate"
 
           python -m pip install --upgrade pip
-          python -m pip install \
-            capstone \
-            fonttools \
-            lz4 \
-            zstandard
+          python -m pip install capstone fonttools lz4 zstandard
 
           echo "$RUNNER_TEMP/nxnative-venv/bin" >> "$GITHUB_PATH"
 
@@ -81,8 +76,23 @@ jobs:
           set -euo pipefail
 
           if [[ "$DEVICE_TARGET" == "iPhone 15 or older (BC fallback)" ]]; then
-            git clone https://github.com/mianmuhammadse/nxnative.git nxnative
-            git -C nxnative checkout d158df611bf2f3fa315c4f16585575cdfdb2a1d3
+            git clone --no-checkout \
+              https://github.com/mianmuhammadse/nxnative.git nxnative
+
+            cd nxnative
+
+            # Fetch the branch containing the known-good BC fallback commit.
+            git fetch origin no-bc
+
+            # Check out the exact revision that worked on the iPhone 14.
+            git checkout --detach d158df611bf2f3fa315c4f16585575cdfdb2a1d3
+
+            # Fail here with a clear message if the commit cannot be resolved.
+            git rev-parse --verify \
+              d158df611bf2f3fa315c4f16585575cdfdb2a1d3^{commit}
+
+            cd ..
+
             echo "NXNATIVE_MODE=bc-fallback" >> "$GITHUB_ENV"
           else
             git clone https://github.com/seedds/nxnative.git nxnative
@@ -165,6 +175,7 @@ jobs:
             \( -iname '*.nsp' -o -iname '*.nsz' \) \
             -print -quit | grep -q .; then
             echo "::error::No NSP/NSZ packages found."
+            echo "Check whether the downloaded files have valid package extensions."
             exit 1
           fi
 
@@ -318,7 +329,6 @@ jobs:
           echo "Shader package: $SHADER_PKG"
           echo "Shader cache: $SHADER_CACHE"
 
-          # Deliberately omit IOSOUT for the Mac-side build.
           python3 dm/gfx/tools/dmsh_build.py \
             "$SHADER_PKG" \
             "$SHADER_CACHE"
